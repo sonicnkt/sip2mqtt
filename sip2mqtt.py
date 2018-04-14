@@ -9,24 +9,41 @@ import argparse
 import json
 import pjsua as pj
 import paho.mqtt.client as mqtt
+# VCARD Imports
+import vobject
+import codecs
 
 global args
 
+def read_vcard(vcf_file):
+    tel_filter = ur"<TEL{u'TYPE': \[u'.+?'\]}(.+?)>"
+    phone_dict = {}
+    with codecs.open(os.path.join("/opt/sip2mqtt", vcf_file), 'r', encoding='utf-8') as vcf_input:
+        for vcard in vobject.readComponents(vcf_input):
+            name = vcard.fn.value
+            if 'tel' in vcard.contents:
+                numbers = re.findall(tel_filter, str(vcard.contents['tel']))
+                numbers = [num.replace(" ", "").replace("-", "") for num in numbers]
+                phone_dict[name] = tuple(numbers)
+    return phone_dict
+
 def extract_caller_id(url):
     m = re.match(r"\"(.*)\".*:(.*)@", url)
-    return m.group(1) + " " + phone_format(m.group(2))
+    telnumber = m.group(1)
+    if phonedict:
+        return lookup_number(telnumber[1:]) + " (" + telnumber + ")"
+    else:
+        return telnumber
+    
+def lookup_number(phone_number):
+    for key, value in phonedict.iteritems():
+        if any(phone_number in s for s in value):
+            caller = key
+            break
+        else:
+            caller = "Unknown"
 
-def phone_format(phone_number):
-    clean_phone_number = re.sub('[^0-9]+', '', phone_number)
-    formatted_phone_number = ''
-
-    try:
-        formatted_phone_number = re.sub("(\d)(?=(\d{3})+(?!\d))", r"\1-", "%d" % int(clean_phone_number[:-1])) + clean_phone_number[-1]
-    except:
-        logging.warn( "Warning: unable to format " + clean_phone_number )
-        formatted_phone_number = clean_phone_number
-
-    return formatted_phone_number
+    return caller
 
 def signal_handler(signal, frame):
     logging.info( 'Exiting...' )
@@ -85,36 +102,46 @@ class SMCallCallback(pj.CallCallback):
             logging.info( 'SIP: Current call has ended' )
             broker.publish(args.mqtt_topic, payload="{\"verb\": \"disconnected\", \"caller\":\"\", \"uri\":\"\"}", qos=0, retain=True)
 
+def environ_or_required(key):
+    # if ENV exist use that, if not this argument ist required
+    if os.environ.get(key):
+        return {'default': os.environ.get(key)}
+    else:
+        return {'required': True}            
+            
 def main(argv):
     global broker
     global pj
     global lib
     global args
-
+    global phonedict
+    
     app_name="SIP2MQTT"
 
     parser = argparse.ArgumentParser(description='A SIP monitoring tool that publishes incoming calls with CallerID to an MQTT channel')
-    requiredNamed = parser.add_argument_group('required named arguments')
 
-    requiredNamed.add_argument("-a",    "--mqtt_domain",    type=str, required=True, help="the MQTT broker domain string", default=os.environ.get('MQTT_DOMAIN', None))
-    requiredNamed.add_argument("-t",    "--mqtt_port",      type=int, required=True, help="the MQTT broker port number", default=os.environ.get('MQTT_PORT', None))
-    parser.add_argument(                "--mqtt_keepalive", type=int, required=False, help="the MQTT broker keep alive in seconds", default=60)
-    parser.add_argument(                "--mqtt_protocol",  type=str, required=False, help="the MQTT broker protocol", default="MQTTv311", choices=['MQTTv31', 'MQTTv311'])
-    requiredNamed.add_argument("-u",    "--mqtt_username",  type=str, required=True, help="the MQTT broker username", default=os.environ.get('MQTT_USERNAME', None))
-    requiredNamed.add_argument("-p",    "--mqtt_password",  type=str, required=False, help="the MQTT broker password", default=os.environ.get('MQTT_PASSWORD', None))
-    parser.add_argument(                "--mqtt_topic",     type=str, required=False, help="the MQTT broker topic", default=os.environ.get('MQTT_TOPIC', "home/sip"))
-
-    requiredNamed.add_argument("-d",    "--sip_domain",     type=str, required=True, help="the SIP domain", default=os.environ.get('SIP_DOMAIN', None))
-    parser.add_argument(                "--sip_port",       type=int, required=False, help="the SIP transport port number", default=os.environ.get('SIP_PORT', 5060))
-    requiredNamed.add_argument("-n",    "--sip_username",   type=str, required=True, help="the SIP username", default=os.environ.get('SIP_USERNAME', None))
-    requiredNamed.add_argument("-s",    "--sip_password",   type=str, required=False, help="the SIP password", default=os.environ.get('SIP_PASSWORD', None))
-    parser.add_argument(                "--sip_display",    type=str, required=False, help="the SIP user display name", default=app_name)
-
-    parser.add_argument(                "--log_level",      type=int, required=False, help="the application log level", default=3, choices=[0, 1, 2, 3])
-    parser.add_argument("-v",           "--verbosity",      action="count", help="increase output verbosity", default=3)
-
+    parser.add_argument("-a",    "--mqtt_domain",    type=str, help="the MQTT broker domain string", **environ_or_required('MQTT_DOMAIN'))
+    parser.add_argument("-t",    "--mqtt_port",      type=int, help="the MQTT broker port number", **environ_or_required('MQTT_PORT'))
+    parser.add_argument(         "--mqtt_keepalive", type=int, help="the MQTT broker keep alive in seconds", default=60)
+    parser.add_argument(         "--mqtt_protocol",  type=str, help="the MQTT broker protocol", default="MQTTv311", choices=['MQTTv31', 'MQTTv311'])
+    parser.add_argument("-u",    "--mqtt_username",  type=str, help="the MQTT broker username", **environ_or_required('MQTT_USERNAME'))
+    parser.add_argument("-p",    "--mqtt_password",  type=str, help="the MQTT broker password", default=os.environ.get('MQTT_PASSWORD', None))
+    parser.add_argument(         "--mqtt_topic",     type=str, help="the MQTT broker topic", default=os.environ.get('MQTT_TOPIC', "home/sip"))
+                                                               
+    parser.add_argument("-d",    "--sip_domain",     type=str, help="the SIP domain", **environ_or_required('SIP_DOMAIN'))
+    parser.add_argument(         "--sip_server",     type=str, help="the SIP server", default=os.environ.get('SIP_SERVER', None))
+    parser.add_argument(         "--sip_port",       type=int, help="the SIP transport port number", default=os.environ.get('SIP_PORT', 5060))
+    parser.add_argument("-n",    "--sip_username",   type=str, help="the SIP username", **environ_or_required('SIP_USERNAME'))
+    parser.add_argument("-s",    "--sip_password",   type=str, help="the SIP password", default=os.environ.get('SIP_PASSWORD', None))
+    parser.add_argument(         "--sip_display",    type=str, help="the SIP user display name", default=app_name)
+                                                               
+    parser.add_argument(         "--vcard",          type=str, help="the VCARD filename (input.vcf)", default=os.environ.get('VCARD', None))
+    
+    parser.add_argument(         "--log_level",      type=int, help="the application log level", default=3, choices=[0, 1, 2, 3])
+    parser.add_argument("-v",    "--verbosity",      action="count", help="increase output verbosity", default=3)
+    
     args = parser.parse_args()
-
+    
     log_level = logging.INFO #Deault logging level
     if args.verbosity == 1:
         log_level = logging.ERROR
@@ -124,7 +151,7 @@ def main(argv):
         log_level = logging.INFO
     elif args.verbosity >= 4:
         log_level = logging.DEBUG
-
+    
     # Configure logging
     # logging.basicConfig(filename="sip2mqtt.log", format="%(asctime)s - %(levelname)s - %(message)s",
     #                     datefmt="%m/%d/%Y %I:%M:%S %p", level=log_level)
@@ -152,10 +179,19 @@ def main(argv):
     logging.info("Status Topic: " + args.mqtt_topic)
     logging.info("--- SIP Configuration ---")
     logging.info("Domain: " + args.sip_domain)
+    logging.info("Server: " + str(args.sip_server))
     logging.info("Username: " + args.sip_username)
     logging.info("DisplayName: " + args.sip_display)
-
+    logging.info("--- VCARD Configuration ---")
+    logging.info("Filename: " + args.vcard)
+    
     try:
+        # Import contacts from vcard 
+        if args.vcard:
+            phonedict = read_vcard(args.vcard)
+        else:
+            phonedict = None
+
         # Handle mqtt connection and callbacks
         broker = mqtt.Client(client_id="", clean_session=True, userdata=None, protocol=eval("mqtt." + args.mqtt_protocol))
         broker.username_pw_set(args.mqtt_username, password=args.mqtt_password)
@@ -172,21 +208,25 @@ def main(argv):
         mc = pj.MediaConfig()
         mc.clock_rate = 8000
 
-        lib.init(ua_cfg = ua, log_cfg = pj.LogConfig(level=args.verbosity, callback=None), media_cfg=mc)
+        lib.init(ua_cfg = ua, log_cfg = pj.LogConfig(level=args.verbosity, console_level=args.verbosity, filename='/opt/sip2mqtt/sip.log', callback=None), media_cfg=mc)
         lib.create_transport(pj.TransportType.UDP, pj.TransportConfig(args.sip_port))
         lib.set_null_snd_dev()
         lib.start()
-
+        
         acc_cfg = pj.AccountConfig()
         acc_cfg.id = "sip:" + args.sip_username + "@" + args.sip_domain
-        acc_cfg.reg_uri = "sip:" + args.sip_domain
+        if args.sip_server:
+            acc_cfg.reg_uri = "sip:" + args.sip_server
+        else:
+            acc_cfg.reg_uri = "sip:" + args.sip_domain
         acc_cfg.auth_cred = [ pj.AuthCred(args.sip_domain, args.sip_username, args.sip_password) ]
         acc_cfg.allow_contact_rewrite = False
-
+        
         acc = lib.create_account(acc_cfg)
         acc_cb = SMAccountCallback(acc)
+        
         acc.set_callback(acc_cb)
-
+        
         logging.info( "-- Registration Complete --" )
         logging.info( 'SIP: Status = ' + str(acc.info().reg_status) + ' (' + acc.info().reg_reason + ')' )
 
@@ -194,7 +234,11 @@ def main(argv):
         logging.critical( ("Exception: " + str(e)) )
         lib.destroy()
         sys.exit(1)
-
+    
+    except IOError, e:
+        logging.error( ("Could not open vCard: \n" + str(e)) )
+        sys.exit(1)    
+    
     # Main work loop
     try:
         rc = broker.loop_start()
@@ -214,3 +258,4 @@ def main(argv):
 # Get things started
 if __name__ == '__main__':
     main(sys.argv[1:])
+
