@@ -37,7 +37,7 @@ More optional parametters can be viewed by running python sip2mqtt.py -h
 ## docker usage
 As the docker image is missing this script as well as a vcard for contacts and a necessary python module im using a startup script with the container.
 
-sip2mqtt_startup.sh
+My "sip2mqtt_startup.sh" example:
 ```bash
 #!/bin/bash
 pip install vobject
@@ -57,5 +57,5 @@ python /opt/sip2mqtt/sip2mqtt.py
 Put the script together with my modified sip2mqtt.py and a input.vcf file in a folder you make accessible from the container.
 The docker run command im using looks like this:
 ```bash
-docker run --net=host -v /hostsystem/sip2mqtt:/opt/sip2mqtt retrohunter/pjsip-docker:2.x sh /opt/sip2mqtt/sip2mqtt_startup.sh.sh
+docker run --net=host -v /hostsystem/sip2mqtt:/opt/sip2mqtt retrohunter/pjsip-docker:2.x sh /opt/sip2mqtt/sip2mqtt_startup.sh
 ```
