@@ -28,8 +28,8 @@ def read_vcard(vcf_file):
     return phone_dict
 
 def extract_caller_id(url):
-    m = re.match(r"\"(.*)\".*:(.*)@", url)
-    telnumber = m.group(1)
+    m = re.match(r"(\".*\"|).*<sip:(.*)@", url)
+    telnumber = m.group(2)
     if phonedict:
         return lookup_number(telnumber[1:]) + " (" + telnumber + ")"
     else:
